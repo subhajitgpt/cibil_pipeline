@@ -7,20 +7,54 @@ from openai import OpenAI
 from PIL import Image
 import pytesseract
 
+# --- Encryption deps for OpenAI key decryption ---
+import base64
+import hashlib
+
+# ===================== Encryption / Decryption Helpers =====================
+def decrypt_key(encrypted_data: str, passphrase: str = "default_salt_2024") -> str:
+    """
+    Decrypt an API key that was encrypted with the XOR + SHA256 + base64 scheme
+    from your helper script (encrypt_key).
+
+    Must match the logic in your encrypt_key() helper.
+    """
+    if not encrypted_data:
+        return ""
+    try:
+        encrypted_bytes = base64.b64decode(encrypted_data)
+        key_hash = hashlib.sha256(passphrase.encode("utf-8")).digest()
+
+        decrypted = bytearray()
+        for i, byte in enumerate(encrypted_bytes):
+            decrypted.append(byte ^ key_hash[i % len(key_hash)])
+
+        return decrypted.decode("utf-8")
+    except Exception as e:
+        print(f"[decrypt_key] Decryption error: {e}")
+        return ""
+
 # --- API + Flask setup ---
 load_dotenv(dotenv_path=".env")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Read encrypted OpenAI key + optional passphrase from env
+# Use the SAME passphrase that you used with the helper encryption script.
+OPENAI_ENCRYPTED_KEY = os.getenv("OPENAI_API_KEY_ENCRYPTED") or os.getenv("OPENAI_API_KEY")
+OPENAI_PASSPHRASE = os.getenv("OPENAI_PASSPHRASE", "default_salt_2024")
+
+# Decrypt key (if present)
+OPENAI_API_KEY = decrypt_key(OPENAI_ENCRYPTED_KEY, OPENAI_PASSPHRASE) if OPENAI_ENCRYPTED_KEY else None
 
 client = None
-if OPENAI_API_KEY and OPENAI_API_KEY.startswith("sk-"):
+if OPENAI_API_KEY:
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
-        print(f"✅ OpenAI client initialized successfully")
+        print("✅ OpenAI client initialized successfully (decrypted key)")
     except Exception as e:
         print(f"❌ Failed to initialize OpenAI client: {e}")
         client = None
 else:
-    print("❌ No valid OpenAI API key found in environment")
+    print("❌ No decrypted OpenAI API key available. Check OPENAI_API_KEY_ENCRYPTED / OPENAI_PASSPHRASE")
 
 def check_ocr_dependencies():
     """Check if OCR dependencies are available"""
@@ -1135,7 +1169,7 @@ def ask():
             print(f"OpenAI API error: {e}")
             
     elif prompt and not client:
-        error_msg = "OpenAI client not available. Please check your API key configuration."
+        error_msg = "OpenAI client not available. Please check your encrypted API key configuration."
     elif not prompt:
         error_msg = "Please enter a question."
 
@@ -1173,7 +1207,7 @@ def debug():
         "ocr_status": ocr_status,
         "ocr_available": ocr_available,
         "openai_client": "Available" if client else "Not Available",
-        "api_key": "Set" if OPENAI_API_KEY else "Missing",
+        "api_key": "Decrypted" if OPENAI_API_KEY else "Missing or decryption failed",
         "metrics": m,
         "context_length": len(session.get("cibil_context", "")),
         "session_keys": list(session.keys()),
@@ -1223,10 +1257,10 @@ def test_pdf():
 
 if __name__ == "__main__":
     print("=== CIBIL Credit Report Analyzer Starting ===")
-    print(f"OpenAI API Key: {'✅ Set' if OPENAI_API_KEY else '❌ Missing'}")
+    print(f"OpenAI API Key (decrypted): {'✅ Present' if OPENAI_API_KEY else '❌ Missing/Failed'}")
     print(f"OpenAI Client: {'✅ Initialized' if client else '❌ Failed'}")
     
-    if client:
+    if client and OPENAI_API_KEY:
         try:
             test_resp = client.chat.completions.create(
                 model="gpt-4.1",
